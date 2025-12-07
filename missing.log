@@ -1,0 +1,28 @@
+Total Technical Tickers: 100
+Matched Tickers: 85
+Missing Tickers (15):
+ - BAJAJHFL
+ - ENRIN
+ - HDFCLIFE
+ - ICICIGI
+ - IRFC
+ - LICI
+ - LT
+ - MAZDOCK
+ - MOTHERSON
+ - NAUKRI
+ - POWERGRID
+ - SBIN
+ - SOLARINDS
+ - SUNPHARMA
+ - TMPV
+
+Available Fundamental Files (cleaned):
+
+--- Potential Candidates for Missing ---
+BAJAJHFL ?= ['Bajaj Holdings (Fuzzy)']
+ICICIGI ?= ['ICICI Bank (Fuzzy)']
+LT ?= ['HCL Technologies', 'LTIMindtree (1)', 'LTIMindtree', 'Max Healthcare', 'UltraTech Cem']
+POWERGRID ?= ['CG Power & Ind (Fuzzy)']
+SBIN ?= ['SBI', 'SBI (Fuzzy)']
+SUNPHARMA ?= ['Torrent Pharma (Fuzzy)']
