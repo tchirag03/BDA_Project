@@ -1,76 +1,77 @@
-import pandas as pd
-import glob
-import os
-import re
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import col, input_file_name, regexp_extract, lag, when, lit, to_date
+from pyspark.sql.window import Window
 
 def main():
-    print("Initializing Pandas ETL (Spark Fallback)...")
-    
-    # 1. Ingest Technicals
-    path = "dataset/technicals_csv/*.csv"
-    files = glob.glob(path)
-    print(f"Found {len(files)} technical files.")
-    
-    dfs = []
-    for f in files:
-        try:
-            # Extract Ticker
-            ticker = re.search(r"\\([^\\]+)_technicals\.csv$", f).group(1) 
-            df = pd.read_csv(f)
-            df['Ticker'] = ticker
-            dfs.append(df)
-        except Exception as e:
-            print(f"Skipping {f}: {e}")
-            
-    if not dfs:
-        print("No data loaded.")
-        return
+    # Initialize Spark - robust config for Windows/Java 22+
+    spark = SparkSession.builder \
+        .appName("EquityPro_ETL") \
+        .master("local[1]") \
+        .config("spark.driver.bindAddress", "127.0.0.1") \
+        .config("spark.driver.host", "127.0.0.1") \
+        .config("spark.ui.enabled", "false") \
+        .getOrCreate()
+    spark.sparkContext.setLogLevel("ERROR")
 
-    full_df = pd.concat(dfs, ignore_index=True)
+    print("Loading Technical Data via Spark...")
     
-    # 2. Feature Engineering
-    # Rename 'Price' to 'Date' if it exists (Common in Yahoo finance downloads)
-    if 'Price' in full_df.columns:
-        full_df.rename(columns={'Price': 'Date'}, inplace=True)
+    # 1. Ingest
+    # Recursive load might handle it, or just wildcard. 
+    # Validated path: dataset/technicals_csv/*.csv
+    raw_df = spark.read.option("header", "true") \
+                 .option("inferSchema", "true") \
+                 .csv("dataset/technicals_csv/*.csv") \
+                 .withColumn("filename", input_file_name())
 
-    # Ensure numeric
-    cols = ["Close", "Open", "High", "Low", "50_SMA", "200_SMA"]
-    for c in cols:
-        if c in full_df.columns:
-            full_df[c] = pd.to_numeric(full_df[c], errors='coerce')
-
-    # Sort for Window ops
-    full_df['Date'] = pd.to_datetime(full_df['Date'], errors='coerce')
-    full_df = full_df.dropna(subset=['Date']) # Drop rows where Date parse failed (header garbage)
-    full_df = full_df.sort_values(['Ticker', 'Date'])
+    # 2. Cleanup & Ticker Extraction
+    # Handle misnamed Date column (Price -> Date)
+    if "Price" in raw_df.columns:
+        raw_df = raw_df.withColumnRenamed("Price", "Date")
     
+    # Extract Ticker from filename: .../ABB_technicals.csv -> ABB
+    # Adjust regex for Windows paths if needed, or generic slash
+    df = raw_df.withColumn("Ticker", regexp_extract("filename", r"([^\/\\]+)_technicals\.csv$", 1))
+
+    # 3. Feature Engineering
+    # Cast Columns
+    numeric_cols = ["Close", "Open", "High", "Low", "50_SMA", "200_SMA"]
+    for c in numeric_cols:
+        if c in df.columns:
+            df = df.withColumn(c, col(c).cast("float"))
+        else:
+            df = df.withColumn(c, lit(0.0))
+
+    # Parse Date (assuming format is suitable or inferred)
+    # If inferred as string, we might need to_date(col("Date"))
+    # The pandas check showed "2016-03-31", should be auto-inferred or standard.
+    
+    # Window for Lag calculations
+    w = Window.partitionBy("Ticker").orderBy("Date")
+
+    # Features:
     # Target: Next Close > Close
-    full_df['NextClose'] = full_df.groupby('Ticker')['Close'].shift(-1)
-    full_df['Target'] = (full_df['NextClose'] > full_df['Close']).astype(int)
-    
-    # Bullish MA
-    if "50_SMA" in full_df.columns and "200_SMA" in full_df.columns:
-        full_df['Bullish_MA'] = (full_df['50_SMA'] > full_df['200_SMA']).astype(int)
-    else:
-        full_df['Bullish_MA'] = 0
+    # Bullish_MA: 50 > 200
+    # Risk_Score: (High - Low) / Open * 100
+    df = df.withColumn("NextClose", lag("Close", -1).over(w)) \
+           .withColumn("Target", (col("NextClose") > col("Close")).cast("int")) \
+           .withColumn("Bullish_MA", (col("50_SMA") > col("200_SMA")).cast("int")) \
+           .withColumn("Volatility", (col("High") - col("Low")) / col("Open")) \
+           .withColumn("Risk_Score", col("Volatility") * 100)
 
-    # Risk Score (Volatility -> (High-Low)/Open) * 100
-    full_df['Volatility'] = (full_df['High'] - full_df['Low']) / full_df['Open']
-    full_df['Risk_Score'] = full_df['Volatility'] * 100
-
-    # 3. Save
-    output_dir = "dataset/spark_processed"
-    os.makedirs(output_dir, exist_ok=True)
-    output_file = os.path.join(output_dir, "processed_data.parquet")
+    # 4. Save
+    # Drop rows with null targets (last row per group) or vital features
+    final_df = df.dropna(subset=["Target", "Risk_Score", "Close"]) \
+                 .select("Ticker", "Date", "Close", "Open", "High", "Low", "Volume", 
+                         "Risk_Score", "Bullish_MA", "Target", "Volatility")
     
-    # Drop NaNs for ML
-    final_df = full_df.dropna(subset=['Target', 'Risk_Score', 'Bullish_MA'])
+    output_path = "dataset/spark_processed/processed_data.parquet"
+    print(f"Saving processed data to {output_path}...")
     
-    print(f"Processed {len(final_df)} rows.")
-    print(final_df[['Ticker', 'Date', 'Target', 'Risk_Score']].head())
+    # Coalesce to 1 to produce fewer files (cleaner for local usage)
+    final_df.coalesce(1).write.mode("overwrite").parquet("dataset/spark_processed")
     
-    final_df.to_parquet(output_file, index=False)
-    print(f"Data saved to {output_file}")
+    print("Done.")
+    spark.stop()
 
 if __name__ == "__main__":
     main()
