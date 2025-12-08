@@ -12,65 +12,24 @@ def create_spark_session():
 
 def process_fundamentals(spark, input_dir, output_path):
     print("Processing Fundamentals...")
-    # Define schema based on inspection
-    # Expected columns in cleaned CSV: Company, Period, ... (rest from original)
-    # We need to map them to: Ticker, Date, NetProfit, Sales, OperatingProfit, EquityShareCapital, Reserves, Borrowings, Debt, NetWorth, EBIT, ROE, ROCE, EPS, BVPS
-    
-    # Since the column names in CSV might vary or be "Net profit", "Sales", etc., we will read with header=True and infer schema first, then select/rename.
-    
+
     csv_files = glob.glob(os.path.join(input_dir, "*.csv"))
     if not csv_files:
         print("No fundamental files found.")
         return
 
-    # We'll read all CSVs. Since they have the same structure (cleaned), we can read them together or iterate.
-    # Iterating is safer to handle filename -> Ticker mapping if needed, but 'Company' column is already there.
-    
-    # Let's read one to check schema if needed, but for now we trust the cleaning.
-    # The cleaned files have 'Company' and 'Period'. We need to map 'Period' to a Date or keep it as is?
-    # The PRD requires 'Date'. The fundamental data didn't have explicit dates, just 'Period'.
-    # We will assume 'Period' 1 is the latest year, say 2024, and decrement. 
-    # Or better, just store 'Period' as 'Date' string for now if actual date is missing.
-    # Wait, the user wants "Date". I'll synthesize a date based on Period (e.g., Period 1 = 2024-03-31).
-    
-    # Schema for reading (inferring is easier for now as columns are many)
     df = spark.read.option("header", "true").option("inferSchema", "true").csv(input_dir)
-    
-    # Rename columns to match PRD Schema
-    # Mapping: 
-    # Company -> Ticker
-    # Net profit -> NetProfit
-    # Sales -> Sales
-    # ... need to check exact CSV headers. 
-    # Based on previous `view_file` of `dataset/fundamentals_cleaned/Infosys.csv`:
-    # Headers: Company, Period, No., Name, Sales, ...
-    
-    # Let's normalize column names
-    # We need to select specific columns.
-    
-    # PRD Schema: Ticker, Date, NetProfit, Sales, OperatingProfit, EquityShareCapital, Reserves, Borrowings, Debt, NetWorth, EBIT, ROE, ROCE, EPS, BVPS
-    
-    # We need to do some column mapping. 
-    # Let's try to select and rename.
-    
-    # Note: Spark is case insensitive by default for column selection usually.
-    
+  
     df_transformed = df.withColumnRenamed("Company", "Ticker") \
                        .withColumnRenamed("Net profit", "NetProfit") \
                        .withColumnRenamed("Operating Profit", "OperatingProfit") \
                        .withColumnRenamed("Equity Capital", "EquityShareCapital") \
                        .withColumnRenamed("Total Liabilities", "Debt") \
                        .withColumnRenamed("Total Assets", "NetWorth") # Approximation if NetWorth not explicit
-                       # Add other mappings as found in the CSV
-    
-    # For Date: Create a dummy date based on Period. 
-    # Assuming Period 1 is 2024, 2 is 2023...
-    # Period is likely a string or int.
+  
     df_transformed = df_transformed.withColumn("Year", 2025 - col("Period")) \
                                    .withColumn("Date", to_date(col("Year").cast("string"), "yyyy"))
     
-    # Select only required columns (if they exist)
-    # We will select available columns and fill missing with null or 0
     required_cols = ["Ticker", "Date", "NetProfit", "Sales", "OperatingProfit", "EquityShareCapital", "Reserves", "Borrowings", "Debt", "NetWorth", "EBIT", "ROE", "ROCE", "EPS", "BVPS"]
     
     selected_cols = []

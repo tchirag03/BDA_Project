@@ -4,10 +4,10 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import os
 
-# Page Config
+# Configure Streamlit page layout
 st.set_page_config(page_title="Equity Analysis System", layout="wide")
 
-# Load Data
+# Load cached data from Parquet database
 @st.cache_data
 def load_data():
     try:
@@ -25,12 +25,12 @@ if tech_df.empty:
     st.warning("No data available. Please run the ETL pipeline.")
     st.stop()
 
-# Sidebar
+# Helper for sidebar ticker selection
 st.sidebar.title("Equity Analysis")
 tickers = sorted(tech_df['Ticker'].unique())
 selected_ticker = st.sidebar.selectbox("Select Ticker", tickers)
 
-# Filter Data
+# Filter data for selected ticker
 ticker_tech = tech_df[tech_df['Ticker'] == selected_ticker].sort_values('Date')
 ticker_fund = fund_df[fund_df['Ticker'] == selected_ticker].sort_values('Date', ascending=False)
 ticker_ratings = ratings_df[ratings_df['Ticker'] == selected_ticker]
@@ -42,8 +42,8 @@ if ticker_tech.empty:
 latest_tech = ticker_tech.iloc[-1]
 latest_rating = ticker_ratings.iloc[-1] if not ticker_ratings.empty else None
 
-# Header
-col1, col2, col3, col4 = st.columns(4)
+# Display header metrics
+col1, col2, col3, col4, col5 = st.columns(5)
 with col1:
     st.title(selected_ticker)
 with col2:
@@ -51,12 +51,40 @@ with col2:
 with col3:
     if latest_rating is not None:
         st.metric("Overall Score", f"{latest_rating['OverallScore']:.1f}/5")
+
+# Initialize variables for dynamic labeling
 with col4:
     ml_label = latest_tech['Label'] if latest_tech['Label'] else "N/A"
-    ml_score = latest_tech['Technical_ML_Score']
-    st.metric("ML Prediction", ml_label, f"Score: {ml_score:.1f}" if ml_score else None)
+    ml_score = latest_tech['Technical_ML_Score'] if latest_tech['Technical_ML_Score'] is not None else 5.0
+    # Metric rendered later after calculation
 
-# Tabs
+# Calculate Future Potential and Dynamic Label
+with col5:
+    ml_label_str = str(ml_label)
+    potential = 0.0
+    
+    if ml_label_str == "Strong":
+        potential = (ml_score - 8.0) / 10.0
+    elif ml_label_str == "Weak":
+        potential = (ml_score - 2.0) / 10.0
+    else:
+        potential = (ml_score - 5.0) / 10.0
+        
+    st.metric("Future Potential", f"{potential*100:.1f}%", f"{potential*100:.1f}%")
+
+    # Determine dynamic label based on potential thresholds
+    if potential < -0.01:
+        new_label = "Weak"
+    elif potential > 0.01:
+        new_label = "Strong"
+    else:
+        new_label = "Neutral"
+
+# Display recalculated ML Prediction
+with col4:
+    st.metric("ML Prediction", new_label)
+
+# Create tabs for detailed analysis
 tab1, tab2, tab3 = st.tabs(["Overview", "Technicals", "Fundamentals"])
 
 with tab1:
@@ -73,12 +101,11 @@ with tab1:
 with tab2:
     st.subheader("Price & Volume")
     
-    # Candlestick with SMAs
+    # Create candlestick and volume chart
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
                         vertical_spacing=0.03, subplot_titles=('Price', 'Volume'), 
                         row_width=[0.2, 0.7])
 
-    # Candlestick
     fig.add_trace(go.Candlestick(x=ticker_tech['Date'],
                                  open=ticker_tech['Open'],
                                  high=ticker_tech['High'],
@@ -86,11 +113,9 @@ with tab2:
                                  close=ticker_tech['Close'],
                                  name='OHLC'), row=1, col=1)
     
-    # SMAs
     fig.add_trace(go.Scatter(x=ticker_tech['Date'], y=ticker_tech['SMA50'], line=dict(color='orange', width=1), name='SMA50'), row=1, col=1)
     fig.add_trace(go.Scatter(x=ticker_tech['Date'], y=ticker_tech['SMA200'], line=dict(color='blue', width=1), name='SMA200'), row=1, col=1)
 
-    # Volume
     fig.add_trace(go.Bar(x=ticker_tech['Date'], y=ticker_tech['Volume'], name='Volume'), row=2, col=1)
 
     fig.update_layout(xaxis_rangeslider_visible=False, height=600)
